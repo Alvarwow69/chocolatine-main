@@ -11,99 +11,89 @@ on:
 env:
   MIRROR_SSH_URL: ${{ vars.MIRROR_SSH_URL }}
   EXECUTABLES: ${{ vars.EXECUTABLES }}
+  
 jobs:
-  check_compilation_and_coding_style:
-    name: Check Compilation and Coding Style
+  check_repository:
     runs-on: ubuntu-latest
-    if: ${{ github.repository != vars.MIRROR_REPO || vars.MIRROR_REPO == '' }}
-    container:
-      image: epitechcontent/epitest-docker
+    outputs:
+      is_mirror: ${{ steps.check.outputs.is_mirror }}
+    steps:
+      - id: check
+        run: |
+          if [ "${{ github.event.repository.ssh_url }}" == "${{ env.MIRROR_SSH_URL }}" ]; then
+            echo "is_mirror=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_mirror=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  check_compilation_and_coding_style:
+    needs: check_repository
+    if: needs.check_repository.outputs.is_mirror == 'false'
+    runs-on: ubuntu-latest
+    container: epitechcontent/epitest-docker
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: Check repository with banana
+      - name: Launch coding style checker
         run: banana-check-repo
 
-      - name: Compile project and capture output
+      - name: Compile project
+        run: make
+        env:
+          CC: epiclang
         timeout-minutes: 2
-        shell: bash
-        run: |
-          make CC=epiclang 2>&1 | tee /tmp/build_output.txt
-          exit ${PIPESTATUS[0]}
 
-      - name: Display coding style errors as annotations
-        shell: bash
+      - name: Display coding style errors
         run: |
-          ERRORS=0
-          while IFS= read -r line; do
-            if echo "$line" | grep -q '\[Banana\]'; then
-              file=$(echo "$line" | cut -d':' -f1)
-              lineno=$(echo "$line" | cut -d':' -f2)
-              severity=$(echo "$line" | sed 's/.*\[Banana\] \[\([^]]*\)\].*/\1/')
-              code=$(echo "$line" | sed 's/.*(\ *\(C-[A-Z0-9]*\)\ *).*/\1/')
-              message=$(echo "$line" | sed 's/.*\[Banana\] \[[^]]*\] \(.*\) (C-[A-Z0-9]*)/\1/')
-              echo "::error file=${file},line=${lineno},title=${severity} coding style error::${code} - ${message}"
-              ERRORS=1
-            fi
-          done < /tmp/build_output.txt
-          if [ $ERRORS -ne 0 ]; then
+          if [ -s coding-style-reports.log ]; then
+            while IFS= read -r line; do
+              FILE=$(echo "$line" | cut -d':' -f1 | xargs)
+              LINE=$(echo "$line" | cut -d':' -f2 | xargs)
+              SEVERITY=$(echo "$line" | cut -d':' -f3 | xargs)
+              ERROR=$(echo "$line" | cut -d':' -f4 | xargs)
+              echo "::error file=$FILE,line=$LINE,title=$SEVERITY coding style error::$ERROR"
+            done < coding-style-reports.log
             exit 1
           fi
 
-      - name: Clean build artifacts
+      - name: Clean project
         run: make clean
 
-      - name: Verify executables exist and are executable
+      - name: Verify executables
         shell: bash
         run: |
-          IFS=',' read -ra EXEC_LIST <<< "$EXECUTABLES"
-          FAILED=0
-          for exec in "${EXEC_LIST[@]}"; do
-            exec=$(echo "$exec" | xargs)
-            if [ ! -f "$exec" ]; then
-              echo "::error file=${exec}::Executable '${exec}' not found"
-              FAILED=1
-            elif [ ! -x "$exec" ]; then
-              echo "::error file=${exec}::File '${exec}' is not executable"
-              FAILED=1
+          IFS=',' read -ra EXES <<< "$EXECUTABLES"
+          for exe in "${EXES[@]}"; do
+            if [ ! -f "$exe" ] || [ ! -x "$exe" ]; then
+              echo "::error title=Executable missing or not executable::$exe is missing or cannot be executed."
+              exit 1
             fi
           done
-          if [ $FAILED -ne 0 ]; then
-            exit 1
-          fi
 
   run_tests:
-    name: Run Tests
-    runs-on: ubuntu-latest
     needs: check_compilation_and_coding_style
-    if: ${{ github.repository != vars.MIRROR_REPO || vars.MIRROR_REPO == '' }}
-    container:
-      image: epitechcontent/epitest-docker
+    runs-on: ubuntu-latest
+    container: epitechcontent/epitest-docker
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
       - name: Run tests
-        timeout-minutes: 2
         run: make tests_run
+        timeout-minutes: 2
 
   push_to_mirror:
-    name: Push to Mirror Repository
-    runs-on: ubuntu-latest
     needs: run_tests
-    if: ${{ github.event_name == 'push' && (github.repository != vars.MIRROR_REPO || vars.MIRROR_REPO == '') }}
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Mirror repository
+      - name: Push to mirror
         uses: pixta-dev/repository-mirroring-action@v1
         with:
           target_repo_url: ${{ env.MIRROR_SSH_URL }}
