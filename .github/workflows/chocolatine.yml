@@ -9,8 +9,8 @@ on:
       - "no-ga/**"
 
 env:
-  MIRROR_SSH_URL: "mysh,mosh"
-  EXECUTABLES: ${{ vars.EXECUTABLES }}
+  MIRROR_SSH_URL: ${{ vars.MIRROR_SSH_URL }}
+  EXECUTABLES: "mysh,mosh"
   
 jobs:
   check_compilation_and_coding_style:
