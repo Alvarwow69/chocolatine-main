@@ -15,7 +15,7 @@ env:
 jobs:
   check_compilation_and_coding_style:
     runs-on: ubuntu-latest
-    if: ${{ !contains($MIRROR_SSH_URL, github.repository) }}
+    if: ${{ !contains(vars.MIRROR_SSH_URL, github.repository) }}
     container: epitechcontent/epitest-docker
     steps:
       - name: Checkout repository
