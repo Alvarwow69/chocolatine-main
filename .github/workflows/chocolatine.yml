@@ -11,140 +11,114 @@ on:
 env:
   MIRROR_SSH_URL: ${{ vars.MIRROR_SSH_URL }}
   EXECUTABLES: ${{ vars.EXECUTABLES }}
+  CC: epiclang
 
 jobs:
-  check_if_workflow_should_run:
-    name: Checks if the workflow should run
-    runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.check_if_repository_is_mirror.outputs.should_run }}
-    steps:
-      - name: Checking if the repository is the mirror repository
-        id: check_if_repository_is_mirror
-        shell: bash
-        run: |
-          if [[ $MIRROR_SSH_URL =~ $GITHUB_REPOSITORY ]]; then
-            echo "The repository is the mirror repository"
-            echo "should_run=false" >> $GITHUB_OUTPUT
-          else
-            echo "should_run=true" >> $GITHUB_OUTPUT
-          fi
-
   check_compilation_and_coding_style:
-    name: Checks compilation and coding style compliance
-    needs: [check_if_workflow_should_run]
-    if: ${{ needs.check_if_workflow_should_run.outputs.should_run == 'true' }}
+    if: github.repository != 'EpitechPGE1-2025/G-DOP-200-LYN-2-1-chocolatine-3'
     runs-on: ubuntu-latest
-    container: epitechcontent/epitest-docker:latest
+    container:
+      image: epitechcontent/epitest-docker
+
     steps:
-      - name: Fetching repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - name: Running banana-check-repo
-        id: running_banana_check_repo
+      - name: Check Repo with banana
         run: |
-          echo "report<<EOF" >> $GITHUB_OUTPUT
-          (banana-check-repo || exit 0) >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          EXIT=0
 
-      - name: Running make command
-        id: running_make
-        shell: bash
+          set +e
+          banana-check-repo . > errors.txt
+          grep "\[Banana\]" errors.txt > banana_errors.txt
+          set -e
+          while IFS= read -r line; do
+            file=$(echo "$line" | cut -d':' -f1)
+            message=$(echo "$line" | sed 's/.*] //' | sed 's/ (C-[A-Z0-9]*)//')
+            type=$(echo "$line" | grep -o "\[Fatal\]\|\[Minor\]\|\[Major\]\|\[Info\]" | tr -d '[]')
+            code=$(echo "$line" | grep -o "C-[A-Z0-9]*")
+            echo "::error file=$file,title=$type coding style error::$code - $message"
+            EXIT=1
+          done < banana_errors.txt
+
+          if [ $EXIT -eq 1 ]; then
+            exit 1
+          fi
+          exit 0
+
+      - name: Compile
         run: |
-          set -o pipefail
-          CC=epiclang make 2>&1 | tee make.log
-          echo "report<<EOF" >> $GITHUB_OUTPUT
-          cat make.log >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          make CC=epiclang > errors.txt 2>&1
         timeout-minutes: 2
 
-      - name: Initializing FAIL_TASK environment variable
+      - name: Check coding style
         run: |
-          echo "FAIL_TASK=false" >> "$GITHUB_ENV"
+          set +e
+          grep "\[Banana\]" errors.txt > banana_errors.txt
+          set -e
+          while IFS= read -r line; do
+            file=$(echo "$line" | cut -d':' -f1)
+            line_num=$(echo "$line" | cut -d':' -f2)
+            message=$(echo "$line" | sed 's/.*] //' | sed 's/ (C-[A-Z0-9]*)//')
+            type=$(echo "$line" | grep -o "\[Fatal\]\|\[Minor\]\|\[Major\]\|\[Info\]" | tr -d '[]')
+            code=$(echo "$line" | grep -o "C-[A-Z0-9]*")
+            echo "::error file=$file,line=$line_num,title=$type coding style error::$code - $message"
+          done < banana_errors.txt
 
-      - name: Displaying banana-check-repo script coding style infringements as error annotations
-        shell: bash
+          if grep "\[Banana\]" errors.txt; then
+            exit 1
+          fi
+          exit 0
+
+      - name: Clean
+        run: make clean
+
+      - name: Executables
         run: |
-          REPORT='${{ steps.running_banana_check_repo.outputs.report }}'
-          IFS='
-          '
-          for ERROR in $REPORT; do
-            if [[ $ERROR =~ \[Banana\] ]]; then
-              echo "FAIL_TASK=true" >> "$GITHUB_ENV"
-              FILE=$(echo $ERROR | cut -d ':' -f 1)
-              LEVEL=$(echo $ERROR | cut -d '[' -f 3 | cut -d ']' -f 1)
-              RULE=$(echo $ERROR | cut -d '(' -f 2 | cut -d ')' -f 1)
-              DETAIL=$(echo $ERROR | cut -d ']' -f 3 | cut -d '(' -f 1 | xargs)
-              echo "::error file=${FILE},title=${LEVEL} coding style error::${RULE} - ${DETAIL}"
+          EXIT=0
+
+          echo "$EXECUTABLES" | tr ',' '\n' > exec_list.txt
+          while IFS= read -r file; do
+            if [ ! -f "$file" ]; then
+              echo "::error file=$file::$file not found"
+              EXIT=1
             fi
-          done
-
-      - name: Displaying make command coding style infringements as error annotations
-        shell: bash
-        run: |
-          REPORT='${{ steps.running_make.outputs.report }}'
-          IFS='
-          '
-          for ERROR in $REPORT; do
-            if [[ $ERROR =~ \[Banana\] ]]; then
-              echo "FAIL_TASK=true" >> "$GITHUB_ENV"
-              FILE=$(echo $ERROR | cut -d ':' -f 1)
-              LINE=$(echo $ERROR | cut -d ':' -f 2)
-              LEVEL=$(echo $ERROR | cut -d '[' -f 3 | cut -d ']' -f 1)
-              RULE=$(echo $ERROR | cut -d '(' -f 2 | cut -d ')' -f 1)
-              DETAIL=$(echo $ERROR | cut -d ']' -f 3 | cut -d '(' -f 1 | xargs)
-              echo "::error file=${FILE},line=${LINE},title=${LEVEL} coding style error::${RULE} - ${DETAIL}"
+            if [ ! -x "$file" ]; then
+              echo "::error file=$file::$file not executable"
+              EXIT=1
             fi
-          done
-      - name: Failing if there are any coding style errors
-        if: env.FAIL_TASK == 'true'
-        run: exit 1
+          done < exec_list.txt
 
-      - run: make clean
-
-      - name: Verifies that files are present and executable
-        run: |
-          echo "FAIL_TASK=false" >> "$GITHUB_ENV"
-          SEARCH_BINARIES="${{ env.EXECUTABLES }}"
-          IFS=$','
-          for BIN in $SEARCH_BINARIES; do
-              if [ ! -f "${BIN}" ]; then
-                  echo "::error file=${BIN},title=Binary not found::${BIN}"
-                  echo "FAIL_TASK=true" >> "$GITHUB_ENV"
-              elif [ ! -x "${BIN}" ]; then
-                  echo "::error file=${BIN},title=Binary not executable::${BIN}"
-                  echo "FAIL_TASK=true" >> "$GITHUB_ENV"
-              fi
-          done
-      - name: Fail if needed
-        if: env.FAIL_TASK == 'true'
-        run: exit 1
+          if [ $EXIT -eq 1 ]; then
+            exit 1
+          fi
+          exit 0
 
   run_tests:
-    name: Checks that all the tests pass
-    needs: [check_compilation_and_coding_style]
+    needs: check_compilation_and_coding_style
     runs-on: ubuntu-latest
-    container: epitechcontent/epitest-docker:latest
-    steps:
-      - name: Fetching repository
-        uses: actions/checkout@v6
+    container:
+      image: epitechcontent/epitest-docker
 
-      - name: Running tests using "make tests_run"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Launch tests
         run: make tests_run
         timeout-minutes: 2
 
   push_to_mirror:
-    name: Pushes the current repository files to a given mirror repository
-    needs: [run_tests]
-    if: ${{ github.event_name == 'push' }}
+    needs: run_tests
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+
     steps:
-      - name: Fetching repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Push mirror repository
+      - name: Clean all the repo
+        run: make fclean ; ls -R
+      - name: Push to mirror
         uses: pixta-dev/repository-mirroring-action@v1
         with:
           target_repo_url: ${{ env.MIRROR_SSH_URL }}
