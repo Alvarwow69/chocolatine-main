@@ -10,7 +10,7 @@ on:
 
 env:
   MIRROR_SSH_URL: ${{ vars.MIRROR_SSH_URL }}
-  EXECUTABLES: "mysh,mosh"
+  EXECUTABLES: "mysh"
   CC: epiclang
 
 jobs:
